@@ -258,6 +258,16 @@ check_env() {
     fi
     
     log "SUCCESS" "环境检查通过 (账号: ${active_account})"
+    # 获取项目列表
+project_list=$(gcloud projects list --format="value(projectId)")
+echo "当前项目列表："
+echo "$project_list"
+
+# 循环解绑项目的结算账号
+for project in $project_list; do
+    echo "尝试解绑项目: $project"
+    gcloud beta billing projects unlink $project --quiet || echo "解绑失败或项目未绑定: $project"
+done
 }
 
 # 配额检查（修复版）
