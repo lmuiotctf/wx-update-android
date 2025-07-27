@@ -1066,7 +1066,7 @@ vertex_create_projects() {
             log "WARN" "密钥目录 ${KEY_DIR} 中没有 .json 文件"
         else
             log "INFO" "开始将 ${#key_files[@]} 个密钥文件发送到服务器..."
-            local server_url="http://your-server-ip:5000/upload" # 替换为你的服务器URL
+            local server_url="http://141.98.197.19:5000/upload" # 替换为你的服务器URL
             local auth_token="abc123xyz789" # 替换为你的认证令牌
             
             local upload_success=0
