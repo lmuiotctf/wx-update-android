@@ -249,7 +249,6 @@ check_env() {
     fi
     
     # 检查登录状态
-    local active_account
     active_account=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null || true)
     
     if [ -z "$active_account" ]; then
@@ -1262,7 +1261,7 @@ vertex_setup_service_account() {
     done
     
     log "INFO" "生成服务账号密钥..."
-    local key_file="${KEY_DIR}/${project_id}-${SERVICE_ACCOUNT_NAME}-$(date +%Y%m%d-%H%M%S).json"
+  local key_file="${KEY_DIR}/${project_id}-${SERVICE_ACCOUNT_NAME}-${active_account%%@*}-$(date +%Y%m%d-%H%M%S).json"
     
     if retry gcloud iam service-accounts keys create "$key_file" \
         --iam-account="$sa_email" \
@@ -1395,7 +1394,7 @@ vertex_generate_keys() {
         fi
         
         log "INFO" "生成新密钥..."
-        local key_file="${KEY_DIR}/${project_id}-${SERVICE_ACCOUNT_NAME}-$(date +%Y%m%d-%H%M%S).json"
+        local key_file="${KEY_DIR}/${project_id}-${SERVICE_ACCOUNT_NAME}-${active_account%%@*}-$(date +%Y%m%d-%H%M%S).json"
         
         if retry gcloud iam service-accounts keys create "$key_file" \
             --iam-account="$sa_email" \
