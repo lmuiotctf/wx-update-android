@@ -25,7 +25,7 @@ PROJECT_ID_PREFIX=${current_email%%@*}
 echo "生成的项目前缀为: $PROJECT_ID_PREFIX"
 
 # 后缀列表
-SUFFIX_LIST=("a" "b" "c")
+SUFFIX_LIST=("a" "b" "c","d")
 
 # 获取结算账号
 billing_id=$(gcloud beta billing accounts list --format="value(name.basename())" | head -n 1)
