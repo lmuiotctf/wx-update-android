@@ -46,7 +46,7 @@ CLEANUP_LOG="api_keys_cleanup_$(date +%Y%m%d_%H%M%S).log"
 # Vertex模式配置
 BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
 VERTEX_PROJECT_PREFIX="${PROJECT_PREFIX}"  # 使用与 PROJECT_PREFIX 相同的默认值
-MAX_PROJECTS_PER_ACCOUNT=${MAX_PROJECTS_PER_ACCOUNT:-5}
+MAX_PROJECTS_PER_ACCOUNT=5
 SERVICE_ACCOUNT_NAME="${SERVICE_ACCOUNT_NAME:-vertex-admin}"
 KEY_DIR="${KEY_DIR:-./keys}"
 ENABLE_EXTRA_ROLES=("roles/iam.serviceAccountUser" "roles/aiplatform.user")
