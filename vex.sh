@@ -990,7 +990,7 @@ vertex_create_projects() {
         return 1
     fi
     
-    local num_projects=3
+    local num_projects=5
     
     if [ "$num_projects" -gt "$max_new" ]; then
         log "ERROR" "请求的项目数量 ($num_projects) 超过剩余配额 ($max_new)"
