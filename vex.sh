@@ -149,6 +149,11 @@ extract_email_prefix() {
     fi
 }
 
+# 生成简短的时间戳
+generate_short_timestamp() {
+    date +%Y%m%d_%H%M
+}
+
 # 改进的重试函数（支持命令）
 retry() {
     local max_attempts="$MAX_RETRY_ATTEMPTS"
@@ -204,7 +209,18 @@ ask_yes_no() {
     return 0
 }
 
-# 生成唯一后缀
+# 生成项目ID - 修改为不包含随机后缀的版本
+generate_simple_project_id() {
+    local prefix="${1:-$PROJECT_PREFIX}"
+    local timestamp
+    # 使用时间戳生成简单但唯一的项目ID
+    timestamp=$(date +%s)
+    # 取后6位数字作为简短标识
+    local short_id=$(echo "$timestamp" | tail -c 7)
+    echo "${prefix}-${short_id}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-30
+}
+
+# 生成唯一后缀（保留原函数用于其他地方）
 unique_suffix() { 
     if command -v uuidgen &>/dev/null; then
         uuidgen | tr -d '-' | cut -c1-6 | tr '[:upper:]' '[:lower:]'
@@ -213,7 +229,7 @@ unique_suffix() {
     fi
 }
 
-# 生成项目ID
+# 生成项目ID（原函数保留）
 new_project_id() {
     local prefix="${1:-$PROJECT_PREFIX}"
     local suffix
@@ -580,7 +596,7 @@ vertex_create_projects() {
     
     log "INFO" "自动创建 ${num_projects} 个项目，前缀: ${project_prefix}"
     log "INFO" "密钥将保存在: ${KEY_DIR}"
-    log "INFO" "JSON文件名将包含账户前缀: ${ACTIVE_ACCOUNT_PREFIX}"
+    log "INFO" "JSON文件名格式: ${project_prefix}-${ACTIVE_ACCOUNT_PREFIX}-时间戳.json"
     
     # 自动确认
     ask_yes_no "确认自动创建 ${num_projects} 个项目并提取 JSON 密钥？" "Y"
@@ -592,7 +608,8 @@ vertex_create_projects() {
     local i=1
     while [ $i -le $num_projects ]; do
         local project_id
-        project_id=$(new_project_id "$project_prefix")
+        # 使用简化的项目ID生成方式（不包含随机后缀）
+        project_id=$(generate_simple_project_id "$project_prefix")
         
         log "INFO" "[${i}/${num_projects}] 创建项目: ${project_id}"
         
@@ -693,7 +710,7 @@ vertex_create_projects() {
     echo "  总计: ${num_projects}"
     echo
     echo "JSON 密钥文件已保存在: ${KEY_DIR}"
-    echo "所有文件都包含账户前缀: ${ACTIVE_ACCOUNT_PREFIX}"
+    echo "文件名格式: ${PROJECT_PREFIX}-${ACTIVE_ACCOUNT_PREFIX}-时间戳.json"
     echo "请检查该目录中的所有 .json 文件"
     echo
     echo -e "${YELLOW}⚠️  重要提醒：${NC}"
@@ -738,9 +755,10 @@ vertex_setup_service_account() {
     done
     
     log "INFO" "生成服务账号 JSON 密钥..."
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    # 修改文件名格式，添加账户前缀
-    local key_file="${KEY_DIR}/${project_id}-${ACTIVE_ACCOUNT_PREFIX}-${SERVICE_ACCOUNT_NAME}-${timestamp}.json"
+    
+    # 生成你想要的格式：v6-user123-20250523_1430.json
+    local timestamp=$(generate_short_timestamp)
+    local key_file="${KEY_DIR}/${PROJECT_PREFIX}-${ACTIVE_ACCOUNT_PREFIX}-${timestamp}.json"
     
     if retry gcloud iam service-accounts keys create "$key_file" \
         --iam-account="$sa_email" \
@@ -764,7 +782,7 @@ main() {
     echo "║          GCP API 密钥管理工具 v${VERSION}              ║"
     echo "║                                                       ║"
     echo "║          自动创建 5 个 Vertex AI 项目和 JSON 密钥       ║"
-    echo "║          文件名包含账户前缀标识                        ║"
+    echo "║          文件名格式：v6-邮箱前缀-时间戳.json            ║"
     echo "╚═══════════════════════════════════════════════════════╝"
     echo -e "${NC}"
     echo
