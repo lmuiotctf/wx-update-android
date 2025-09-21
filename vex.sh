@@ -319,7 +319,7 @@ check_env() {
     AGGREGATED_KEY_FILE="aggregated_verbose_keys_${EMAIL_USERNAME}.txt"
     
     log "SUCCESS" "环境检查通过 (账号: ${active_account})"
-    log "INFO" "将使用邮箱前缀: ${EMAIL_USERNAME}@"
+    log "INFO" "将使用邮箱前缀: ${EMAIL_USERNAME}"
     log "INFO" "临时目录: ${TEMP_DIR}"
     
     # 获取项目列表
@@ -677,7 +677,7 @@ vertex_create_projects() {
     
     log "INFO" "自动创建 ${num_projects} 个项目，前缀: ${project_prefix}"
     log "INFO" "密钥将保存在: ${KEY_DIR}"
-    log "INFO" "所有文件名将包含邮箱前缀: ${EMAIL_USERNAME}@"
+    log "INFO" "所有文件名将包含邮箱前缀: ${EMAIL_USERNAME}"
     
     # 自动确认
     ask_yes_no "确认自动创建 ${num_projects} 个项目并提取 JSON 密钥？" "Y"
@@ -770,7 +770,7 @@ vertex_create_projects() {
             
             for key_file in "${key_files[@]}"; do
                 local filename=$(basename "$key_file")
-                local email_prefix="${EMAIL_USERNAME}@"
+                local email_prefix="${EMAIL_USERNAME}"
                 
                 # 检查文件名是否已包含邮箱前缀
                 if [[ "$filename" != *"${email_prefix}"* ]]; then
@@ -846,7 +846,7 @@ vertex_create_projects() {
     echo "  总计: ${num_projects}"
     echo
     echo "JSON 密钥文件已保存在: ${KEY_DIR}"
-    echo "所有文件已添加邮箱前缀: ${EMAIL_USERNAME}@"
+    echo "所有文件已添加邮箱前缀: ${EMAIL_USERNAME}"
     echo "请检查该目录中的所有 .json 文件"
     echo
     echo -e "${YELLOW}⚠️  重要提醒：${NC}"
@@ -858,8 +858,8 @@ vertex_create_projects() {
 # 改进的服务账号设置函数（包含邮箱前缀）
 vertex_setup_service_account() {
     local project_id="$1"
-    local sa_email="${SERVICE_ACCOUNT_NAME}@${project_id}.iam.gserviceaccount.com"
-    local email_prefix="${EMAIL_USERNAME}@"
+    local sa_email="${SERVICE_ACCOUNT_NAME}${project_id}.iam.gserviceaccount.com"
+    local email_prefix="${EMAIL_USERNAME}"
     
     if ! gcloud iam service-accounts describe "$sa_email" --project="$project_id" &>/dev/null; then
         log "INFO" "创建服务账号: ${sa_email}"
