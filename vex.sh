@@ -1,7 +1,7 @@
 #!/bin/bash
 # 优化的 GCP API 密钥管理工具
 # 支持 Gemini API 和 Vertex AI
-# 版本: 2.0.0
+# 版本: 2.0.2
 
 # 仅启用 errtrace (-E) 与 nounset (-u)
 set -Euo
@@ -18,7 +18,7 @@ BOLD='\033[1m'
 
 # ===== 全局配置 =====
 # 版本信息
-VERSION="2.0.0"
+VERSION="2.0.2"
 LAST_UPDATED="2025-05-23"
 
 # 通用配置
@@ -28,18 +28,10 @@ MAX_PARALLEL_JOBS="${CONCURRENCY:-20}"
 TEMP_DIR=""  # 将在初始化时设置
 
 # Gemini模式配置
-TIMESTAMP=$(date +%s)
-# 改进的随机字符生成（兼容性更好）
-if command -v openssl &>/dev/null; then
-    RANDOM_CHARS=$(openssl rand -hex 2)
-else
-    RANDOM_CHARS=$(( RANDOM % 10000 ))
-fi
-EMAIL_USERNAME="momo${RANDOM_CHARS}${TIMESTAMP:(-4)}"
 GEMINI_TOTAL_PROJECTS=175
 PURE_KEY_FILE="key.txt"
-COMMA_SEPARATED_KEY_FILE="comma_separated_keys_${EMAIL_USERNAME}.txt"
-AGGREGATED_KEY_FILE="aggregated_verbose_keys_${EMAIL_USERNAME}.txt"
+COMMA_SEPARATED_KEY_FILE=""
+AGGREGATED_KEY_FILE=""
 DELETION_LOG="project_deletion_$(date +%Y%m%d_%H%M%S).log"
 CLEANUP_LOG="api_keys_cleanup_$(date +%Y%m%d_%H%M%S).log"
 
@@ -50,6 +42,9 @@ MAX_PROJECTS_PER_ACCOUNT=5
 SERVICE_ACCOUNT_NAME="${SERVICE_ACCOUNT_NAME:-vertex-admin}"
 KEY_DIR="${KEY_DIR:-./keys}"
 ENABLE_EXTRA_ROLES=("roles/iam.serviceAccountUser" "roles/aiplatform.user")
+
+# 解绑状态跟踪
+UNLINKED_PROJECTS_FILE="${TEMP_DIR}/unlinked_projects.txt"
 
 # ===== 初始化 =====
 # 创建唯一的临时目录
@@ -137,6 +132,21 @@ cleanup_resources() {
 trap cleanup_resources EXIT
 
 # ===== 工具函数 =====
+
+# 获取活跃的GCP账户邮箱
+get_active_account() {
+    gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null || echo ""
+}
+
+# 提取邮箱用户名部分（@前面的部分）
+extract_email_username() {
+    local email="$1"
+    if [[ "$email" =~ ^([^@]+)@ ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "$email"
+    fi
+}
 
 # 改进的重试函数（支持命令）
 retry() {
@@ -235,9 +245,28 @@ safe_exec() {
     return 0
 }
 
-# 检查环境
+# 检查项目是否已解绑（修复重复解绑问题）
+is_project_unlinked() {
+    local project="$1"
+    if [ -f "$UNLINKED_PROJECTS_FILE" ]; then
+        grep -q "^$project$" "$UNLINKED_PROJECTS_FILE" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+# 标记项目为已解绑
+mark_project_unlinked() {
+    local project="$1"
+    echo "$project" >> "$UNLINKED_PROJECTS_FILE" 2>/dev/null || true
+}
+
+# 改进的环境检查（修复解绑重复执行问题）
 check_env() {
     log "INFO" "检查环境配置..."
+    
+    # 初始化解绑状态文件
+    > "$UNLINKED_PROJECTS_FILE" 2>/dev/null || true
     
     # 检查必要命令
     require_cmd gcloud
@@ -248,26 +277,72 @@ check_env() {
         exit 1
     fi
     
-    # 检查登录状态
-    active_account=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null || true)
+    # 检查登录状态并获取活跃账户
+    active_account=$(get_active_account)
     
     if [ -z "$active_account" ]; then
         log "ERROR" "请先运行 'gcloud auth login' 登录"
         exit 1
     fi
     
+    # 提取邮箱用户名部分用于文件命名
+    EMAIL_USERNAME=$(extract_email_username "$active_account")
+    
+    # 设置文件名（现在使用实际邮箱用户名）
+    COMMA_SEPARATED_KEY_FILE="comma_separated_keys_${EMAIL_USERNAME}.txt"
+    AGGREGATED_KEY_FILE="aggregated_verbose_keys_${EMAIL_USERNAME}.txt"
+    
     log "SUCCESS" "环境检查通过 (账号: ${active_account})"
+    log "INFO" "将使用邮箱前缀: ${EMAIL_USERNAME}@"
     
     # 获取项目列表
-    project_list=$(gcloud projects list --format="value(projectId)")
+    project_list=$(gcloud projects list --format="value(projectId)" --quiet 2>/dev/null || true)
+    
+    if [ -z "$project_list" ]; then
+        log "WARN" "未找到任何项目"
+        return 0
+    fi
+    
     echo "当前项目列表："
     echo "$project_list"
-
-    # 循环解绑项目的结算账号
-    for project in $project_list; do
-        echo "尝试解绑项目: $project"
-        gcloud beta billing projects unlink $project --quiet || echo "解绑失败或项目未绑定: $project"
-    done
+    
+    # 循环解绑项目的结算账号（修复重复执行问题）
+    local unlinked_count=0
+    local skipped_count=0
+    
+    while IFS= read -r project; do
+        # 跳过空行
+        [ -z "$project" ] && continue
+        
+        echo "检查项目: $project"
+        
+        # 检查项目是否已解绑
+        if is_project_unlinked "$project"; then
+            log "INFO" "项目 $project 已解绑，跳过"
+            skipped_count=$((skipped_count + 1)) || true
+            continue
+        fi
+        
+        # 检查项目是否已绑定结算账号
+        if gcloud beta billing projects describe "$project" --format='value(billingAccountName)' --quiet 2>/dev/null | grep -q .; then
+            log "INFO" "尝试解绑项目: $project"
+            if gcloud beta billing projects unlink "$project" --quiet; then
+                log "SUCCESS" "成功解绑项目: $project"
+                mark_project_unlinked "$project"
+                unlinked_count=$((unlinked_count + 1)) || true
+            else
+                log "WARN" "解绑失败: $project"
+            fi
+        else
+            log "INFO" "项目 $project 未绑定结算账号，跳过"
+            mark_project_unlinked "$project"
+            skipped_count=$((skipped_count + 1)) || true
+        fi
+        
+        sleep 0.5  # 添加小延迟避免API限流
+    done <<< "$project_list"
+    
+    log "INFO" "解绑完成：成功 ${unlinked_count} 个，跳过 ${skipped_count} 个"
 }
 
 # 配额检查（修复版）
@@ -566,6 +641,7 @@ vertex_create_projects() {
     
     log "INFO" "自动创建 ${num_projects} 个项目，前缀: ${project_prefix}"
     log "INFO" "密钥将保存在: ${KEY_DIR}"
+    log "INFO" "所有文件名将包含邮箱前缀: ${EMAIL_USERNAME}@"
     
     # 自动确认
     ask_yes_no "确认自动创建 ${num_projects} 个项目并提取 JSON 密钥？" "Y"
@@ -627,7 +703,7 @@ vertex_create_projects() {
         i=$((i + 1)) || true
     done
     
-    # 发送 KEY_DIR 下的所有 .json 文件到服务器
+    # 发送 KEY_DIR 下的所有 .json 文件到服务器（包含邮箱前缀）
     log "INFO" "扫描密钥目录: ${KEY_DIR}"
     if [ ! -d "$KEY_DIR" ]; then
         log "ERROR" "密钥目录不存在: ${KEY_DIR}"
@@ -655,18 +731,74 @@ vertex_create_projects() {
             
             local upload_success=0
             local upload_failed=0
+            
             for key_file in "${key_files[@]}"; do
-                log "INFO" "发送密钥文件: $(basename "$key_file")"
-                if curl -X POST -H "Authorization: Bearer $auth_token" \
-                    -F "file=@$key_file" \
-                    "$server_url" --fail --silent --show-error 2>> "${TEMP_DIR}/upload_errors.log"; then
-                    log "SUCCESS" "成功发送密钥文件: $(basename "$key_file")"
-                    upload_success=$((upload_success + 1)) || true
+                local filename=$(basename "$key_file")
+                local email_prefix="${EMAIL_USERNAME}@"
+                
+                # 检查文件名是否已包含邮箱前缀
+                if [[ "$filename" != *"${email_prefix}"* ]]; then
+                    # 提取原始文件名（去掉.json扩展名）
+                    local base_name="${filename%.*}"
+                    local extension="${filename##*.}"
+                    
+                    # 创建新的包含邮箱前缀的文件名
+                    local new_filename="${email_prefix}${base_name}.${extension}"
+                    local new_file_path="${TEMP_DIR}/${new_filename}"
+                    
+                    # 复制文件并添加邮箱前缀到JSON内容
+                    cp "$key_file" "$new_file_path"
+                    
+                    # 如果JSON文件包含client_email字段，也在内容中添加前缀
+                    if command -v jq &>/dev/null; then
+                        # 读取原始JSON内容
+                        local json_content
+                        json_content=$(cat "$key_file")
+                        
+                        # 如果client_email存在，添加前缀
+                        if echo "$json_content" | jq -e '.client_email' >/dev/null 2>&1; then
+                            local original_email
+                            original_email=$(echo "$json_content" | jq -r '.client_email')
+                            
+                            if [[ "$original_email" != *"${email_prefix}"* ]]; then
+                                # 更新JSON中的client_email字段
+                                local updated_json
+                                updated_json=$(echo "$json_content" | jq --arg prefix "${email_prefix}" '.client_email = ($prefix + (.client_email | split("@") | .[1]))')
+                                
+                                # 写回文件
+                                echo "$updated_json" > "$new_file_path"
+                                log "INFO" "已更新JSON内容中的邮箱为: ${email_prefix}${original_email##*@}"
+                            fi
+                        fi
+                    fi
+                    
+                    log "INFO" "准备上传文件: ${new_filename} (包含邮箱前缀: ${email_prefix})"
+                    
+                    # 上传新文件
+                    if curl -X POST -H "Authorization: Bearer $auth_token" \
+                        -F "file=@$new_file_path" \
+                        "$server_url" --fail --silent --show-error 2>> "${TEMP_DIR}/upload_errors.log"; then
+                        log "SUCCESS" "成功发送密钥文件: ${new_filename}"
+                        upload_success=$((upload_success + 1)) || true
+                    else
+                        log "ERROR" "发送密钥文件失败: ${new_filename}"
+                        upload_failed=$((upload_failed + 1)) || true
+                    fi
                 else
-                    log "ERROR" "发送密钥文件失败: $(basename "$key_file")"
-                    upload_failed=$((upload_failed + 1)) || true
+                    # 文件名已包含邮箱前缀，直接上传
+                    log "INFO" "发送密钥文件: $(basename "$key_file") (已包含邮箱前缀)"
+                    if curl -X POST -H "Authorization: Bearer $auth_token" \
+                        -F "file=@$key_file" \
+                        "$server_url" --fail --silent --show-error 2>> "${TEMP_DIR}/upload_errors.log"; then
+                        log "SUCCESS" "成功发送密钥文件: $(basename "$key_file")"
+                        upload_success=$((upload_success + 1)) || true
+                    else
+                        log "ERROR" "发送密钥文件失败: $(basename "$key_file")"
+                        upload_failed=$((upload_failed + 1)) || true
+                    fi
                 fi
             done
+            
             log "INFO" "上传结果：成功 ${upload_success} 个，失败 ${upload_failed} 个"
         fi
     fi
@@ -678,6 +810,7 @@ vertex_create_projects() {
     echo "  总计: ${num_projects}"
     echo
     echo "JSON 密钥文件已保存在: ${KEY_DIR}"
+    echo "所有文件已添加邮箱前缀: ${EMAIL_USERNAME}@"
     echo "请检查该目录中的所有 .json 文件"
     echo
     echo -e "${YELLOW}⚠️  重要提醒：${NC}"
@@ -686,9 +819,11 @@ vertex_create_projects() {
     echo "• 妥善保管生成的 JSON 密钥文件"
 }
 
+# 改进的服务账号设置函数（包含邮箱前缀）
 vertex_setup_service_account() {
     local project_id="$1"
     local sa_email="${SERVICE_ACCOUNT_NAME}@${project_id}.iam.gserviceaccount.com"
+    local email_prefix="${EMAIL_USERNAME}@"
     
     if ! gcloud iam service-accounts describe "$sa_email" --project="$project_id" &>/dev/null; then
         log "INFO" "创建服务账号: ${sa_email}"
@@ -721,9 +856,13 @@ vertex_setup_service_account() {
         fi
     done
     
-    log "INFO" "生成服务账号 JSON 密钥..."
+    log "INFO" "生成服务账号 JSON 密钥（包含邮箱前缀）..."
     local timestamp=$(date +%Y%m%d_%H%M%S)
-    local key_file="${KEY_DIR}/${project_id}-${SERVICE_ACCOUNT_NAME}-${timestamp}.json"
+    
+    # 创建包含邮箱前缀的文件名
+    local base_filename="${project_id}-${SERVICE_ACCOUNT_NAME}-${timestamp}"
+    local email_prefix_filename="${email_prefix}${base_filename}"
+    local key_file="${KEY_DIR}/${email_prefix_filename}.json"
     
     if retry gcloud iam service-accounts keys create "$key_file" \
         --iam-account="$sa_email" \
@@ -731,7 +870,31 @@ vertex_setup_service_account() {
         --quiet; then
         
         chmod 600 "$key_file"
+        
+        # 更新JSON内容中的client_email字段，添加邮箱前缀
+        if command -v jq &>/dev/null; then
+            local json_content
+            json_content=$(cat "$key_file")
+            
+            # 检查client_email是否存在
+            if echo "$json_content" | jq -e '.client_email' >/dev/null 2>&1; then
+                local original_email
+                original_email=$(echo "$json_content" | jq -r '.client_email')
+                
+                if [[ "$original_email" != *"${email_prefix}"* ]]; then
+                    # 更新JSON中的client_email字段
+                    local updated_json
+                    updated_json=$(echo "$json_content" | jq --arg prefix "${email_prefix}" '.client_email = ($prefix + (.client_email | split("@") | .[1]))')
+                    
+                    # 写回文件
+                    echo "$updated_json" > "$key_file"
+                    log "SUCCESS" "已更新JSON内容中的邮箱为: ${email_prefix}${original_email##*@}"
+                fi
+            fi
+        fi
+        
         log "SUCCESS" "JSON 密钥已保存: $(basename "$key_file")"
+        log "SUCCESS" "文件名已包含邮箱前缀: ${email_prefix}"
         return 0
     else
         log "ERROR" "生成 JSON 密钥失败"
@@ -747,6 +910,7 @@ main() {
     echo "║          GCP API 密钥管理工具 v${VERSION}              ║"
     echo "║                                                       ║"
     echo "║          自动创建 5 个 Vertex AI 项目和 JSON 密钥       ║"
+    echo "║          使用实际GCP账户邮箱前缀                       ║"
     echo "╚═══════════════════════════════════════════════════════╝"
     echo -e "${NC}"
     echo
