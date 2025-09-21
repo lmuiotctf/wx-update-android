@@ -897,7 +897,7 @@ vertex_setup_service_account() {
     
     # 创建包含邮箱前缀的文件名
     local base_filename="${project_id}-${SERVICE_ACCOUNT_NAME}-${timestamp}"
-    local email_prefix_filename="${email_prefix}${base_filename}"
+    local email_prefix_filename="${base_filename}${email_prefix}"
     local key_file="${KEY_DIR}/${email_prefix_filename}.json"
     
     if retry gcloud iam service-accounts keys create "$key_file" \
