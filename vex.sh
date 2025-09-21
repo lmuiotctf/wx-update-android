@@ -1,7 +1,7 @@
 #!/bin/bash
 # 优化的 GCP API 密钥管理工具
 # 支持 Gemini API 和 Vertex AI
-# 版本: 2.0.2
+# 版本: 2.0.4
 
 # 仅启用 errtrace (-E) 与 nounset (-u)
 set -Euo
@@ -18,14 +18,15 @@ BOLD='\033[1m'
 
 # ===== 全局配置 =====
 # 版本信息
-VERSION="2.0.2"
-LAST_UPDATED="2025-05-23"
+VERSION="2.0.4"
+LAST_UPDATED="2025-09-21"
 
 # 通用配置
 PROJECT_PREFIX="${1:-v6}"  # 从命令行参数获取，默认 v6
 MAX_RETRY_ATTEMPTS="${MAX_RETRY:-3}"
 MAX_PARALLEL_JOBS="${CONCURRENCY:-20}"
 TEMP_DIR=""  # 将在初始化时设置
+ENV_CHECKED=false  # 环境检查状态跟踪
 
 # Gemini模式配置
 GEMINI_TOTAL_PROJECTS=175
@@ -43,8 +44,8 @@ SERVICE_ACCOUNT_NAME="${SERVICE_ACCOUNT_NAME:-vertex-admin}"
 KEY_DIR="${KEY_DIR:-./keys}"
 ENABLE_EXTRA_ROLES=("roles/iam.serviceAccountUser" "roles/aiplatform.user")
 
-# 解绑状态跟踪
-UNLINKED_PROJECTS_FILE="${TEMP_DIR}/unlinked_projects.txt"
+# 解绑状态跟踪（延迟初始化）
+UNLINKED_PROJECTS_FILE=""
 
 # ===== 初始化 =====
 # 创建唯一的临时目录
@@ -52,6 +53,9 @@ TEMP_DIR=$(mktemp -d -t gcp_script_XXXXXX) || {
     echo "错误：无法创建临时目录"
     exit 1
 }
+
+# 初始化解绑状态文件路径
+UNLINKED_PROJECTS_FILE="${TEMP_DIR}/unlinked_projects.txt"
 
 # 创建密钥目录
 mkdir -p "$KEY_DIR" 2>/dev/null || {
@@ -248,8 +252,9 @@ safe_exec() {
 # 检查项目是否已解绑（修复重复解绑问题）
 is_project_unlinked() {
     local project="$1"
-    if [ -f "$UNLINKED_PROJECTS_FILE" ]; then
+    if [ -n "$UNLINKED_PROJECTS_FILE" ] && [ -f "$UNLINKED_PROJECTS_FILE" ]; then
         grep -q "^$project$" "$UNLINKED_PROJECTS_FILE" 2>/dev/null
+        return $?
     else
         return 1
     fi
@@ -258,15 +263,35 @@ is_project_unlinked() {
 # 标记项目为已解绑
 mark_project_unlinked() {
     local project="$1"
-    echo "$project" >> "$UNLINKED_PROJECTS_FILE" 2>/dev/null || true
+    if [ -n "$UNLINKED_PROJECTS_FILE" ]; then
+        echo "$project" >> "$UNLINKED_PROJECTS_FILE" 2>/dev/null || {
+            log "WARN" "无法写入解绑状态文件: $UNLINKED_PROJECTS_FILE"
+        }
+    fi
+}
+
+# 初始化解绑状态跟踪文件
+init_unlink_tracking() {
+    if [ -n "$UNLINKED_PROJECTS_FILE" ] && [ ! -f "$UNLINKED_PROJECTS_FILE" ]; then
+        touch "$UNLINKED_PROJECTS_FILE" 2>/dev/null || {
+            log "WARN" "无法创建解绑状态跟踪文件: $UNLINKED_PROJECTS_FILE"
+        }
+        chmod 644 "$UNLINKED_PROJECTS_FILE" 2>/dev/null || true
+    fi
 }
 
 # 改进的环境检查（修复解绑重复执行问题）
 check_env() {
+    # 如果环境已经检查过，跳过
+    if [ "$ENV_CHECKED" = true ]; then
+        log "INFO" "环境已检查，跳过重复检查"
+        return 0
+    fi
+    
     log "INFO" "检查环境配置..."
     
-    # 初始化解绑状态文件
-    > "$UNLINKED_PROJECTS_FILE" 2>/dev/null || true
+    # 初始化解绑状态跟踪
+    init_unlink_tracking
     
     # 检查必要命令
     require_cmd gcloud
@@ -278,6 +303,7 @@ check_env() {
     fi
     
     # 检查登录状态并获取活跃账户
+    local active_account
     active_account=$(get_active_account)
     
     if [ -z "$active_account" ]; then
@@ -294,12 +320,15 @@ check_env() {
     
     log "SUCCESS" "环境检查通过 (账号: ${active_account})"
     log "INFO" "将使用邮箱前缀: ${EMAIL_USERNAME}@"
+    log "INFO" "临时目录: ${TEMP_DIR}"
     
     # 获取项目列表
+    local project_list
     project_list=$(gcloud projects list --format="value(projectId)" --quiet 2>/dev/null || true)
     
     if [ -z "$project_list" ]; then
         log "WARN" "未找到任何项目"
+        ENV_CHECKED=true
         return 0
     fi
     
@@ -324,7 +353,10 @@ check_env() {
         fi
         
         # 检查项目是否已绑定结算账号
-        if gcloud beta billing projects describe "$project" --format='value(billingAccountName)' --quiet 2>/dev/null | grep -q .; then
+        local billing_info
+        billing_info=$(gcloud beta billing projects describe "$project" --format='value(billingAccountName)' --quiet 2>/dev/null || echo "")
+        
+        if [ -n "$billing_info" ] && [ "$billing_info" != "None" ]; then
             log "INFO" "尝试解绑项目: $project"
             if gcloud beta billing projects unlink "$project" --quiet; then
                 log "SUCCESS" "成功解绑项目: $project"
@@ -343,6 +375,9 @@ check_env() {
     done <<< "$project_list"
     
     log "INFO" "解绑完成：成功 ${unlinked_count} 个，跳过 ${skipped_count} 个"
+    
+    # 标记环境检查完成
+    ENV_CHECKED=true
 }
 
 # 配额检查（修复版）
@@ -573,7 +608,8 @@ vertex_main() {
     echo -e "    自动创建 5 个项目并提取 5 个 JSON 密钥"
     echo -e "======================================================${NC}\n"
     
-    check_env || return 1
+    # 环境检查已经在main()中完成，这里不再重复
+    # check_env || return 1  # ❌ 删除这行
     
     echo -e "${YELLOW}警告: Vertex AI 需要结算账户，会产生实际费用！${NC}\n"
     
@@ -915,7 +951,7 @@ main() {
     echo -e "${NC}"
     echo
     
-    # 检查环境并直接执行 Vertex AI 项目创建
+    # 检查环境并直接执行 Vertex AI 项目创建（只检查一次）
     check_env
     vertex_main
 }
